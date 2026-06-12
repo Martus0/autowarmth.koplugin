@@ -312,18 +312,21 @@ function AutoWarmth:scheduleMidnightUpdate(from_resume)
 
         local time2_h = times_h[index2]
         if not time2_h then return end -- to near to the pole
-        local warmth_diff = math.min(self.warmth[index2], 100) - math.min(self.warmth[index1], 100)
+        local w1 = self.warmth[index1] > 100 and self.warmth[index1] - 1000 or self.warmth[index1]
+        local w2 = self.warmth[index2] > 100 and self.warmth[index2] - 1000 or self.warmth[index2]
+        local nightmode_flag = self.warmth[index1] > 100 and 1000 or 0
+        local warmth_diff = w2 - w1
         local time_diff_s = SunTime:getTimeInSec(time2_h) - time1_s
         if warmth_diff ~= 0 and time_diff_s > 0 then
             local delta_t = time_diff_s / math.abs(warmth_diff) -- cannot be inf, no problem
             local delta_w = warmth_diff > 0 and 1 or -1
             for i = 1, math.abs(warmth_diff) - 1 do
-                local next_warmth = math.min(self.warmth[index1], 100) + delta_w * i
+                local next_warmth = w1 + delta_w * i
                 -- only apply warmth for steps the hardware has (e.g. Tolino has 0-10 hw steps
                 -- which map to warmth 0, 10, 20, 30 ... 100)
                 if frac(next_warmth * device_warmth_fit_scale) == 0 then
                     table.insert(self.sched_times_s, time1_s + delta_t * i)
-                    table.insert(self.sched_warmths, next_warmth)
+                    table.insert(self.sched_warmths, next_warmth + nightmode_flag)
                 end
             end
         end
@@ -531,7 +534,7 @@ end
 
 -- Set warmth and schedule the next warmth change
 function AutoWarmth:setWarmth(val, force_warmth)
-    -- A value > 100 means to set night mode and set warmth to maximum.
+    -- A value > 100 means night mode is on; the actual warmth is val - 1000.
     -- We use an offset of 1000 to "flag", that night mode is on.
     if val then
         if self.control_nightmode then
@@ -539,7 +542,7 @@ function AutoWarmth:setWarmth(val, force_warmth)
         end
 
         if self.control_warmth and Device:hasNaturalLight() then
-            val = math.min(val, 100) -- "mask" night mode
+            if val > 100 then val = val - 1000 end -- strip night mode flag
             Powerd:setWarmth(val, force_warmth)
         end
     end
@@ -1011,7 +1014,7 @@ function AutoWarmth:getWarmthMenu()
                         if self.warmth[num] <= 100 then
                             return T(_("%1: %2 %"), text, self.warmth[num])
                         else
-                            return T(_("%1: 100 % + ☾"), text)
+                            return T(_("%1: %2 % + ☾"), text, math.max(self.warmth[num] - 1000, 0))
                         end
                     else
                         if self.warmth[num] <= 100 then
@@ -1053,7 +1056,9 @@ function AutoWarmth:getWarmthMenu()
                                     self.warmth[num] = math.max(self.warmth[num] - 1000, 0) -- delete night mode
                                 end
                             end
-                            self.warmth[#self.warmth - num + 1] = self.warmth[num]
+                            if num <= 3 then
+                                self.warmth[#self.warmth - num + 1] = self.warmth[num]
+                            end
                             G_reader_settings:saveSetting("autowarmth_warmth", self.warmth)
                             self:scheduleMidnightUpdate()
                             if touchmenu_instance then self:updateItems(touchmenu_instance) end
@@ -1076,7 +1081,9 @@ function AutoWarmth:getWarmthMenu()
                         ok_callback = function()
                             if self.warmth[num] <= 100 then
                                 self.warmth[num] = self.warmth[num] + 1000
-                                self.warmth[#self.warmth - num + 1] = self.warmth[num]
+                                if num <= 3 then
+                                    self.warmth[#self.warmth - num + 1] = self.warmth[num]
+                                end
                                 G_reader_settings:saveSetting("autowarmth_warmth", self.warmth)
                                 self:scheduleMidnightUpdate()
                                 if touchmenu_instance then self:updateItems(touchmenu_instance) end
@@ -1086,7 +1093,9 @@ function AutoWarmth:getWarmthMenu()
                         cancel_callback = function()
                             if self.warmth[num] > 100 then
                                 self.warmth[num] = math.max(self.warmth[num] - 1000, 0) -- delete night mode
-                                self.warmth[#self.warmth - num + 1] = self.warmth[num]
+                                if num <= 3 then
+                                    self.warmth[#self.warmth - num + 1] = self.warmth[num]
+                                end
                                 G_reader_settings:saveSetting("autowarmth_warmth", self.warmth)
                                 self:scheduleMidnightUpdate()
                                 if touchmenu_instance then self:updateItems(touchmenu_instance) end
@@ -1167,8 +1176,10 @@ function AutoWarmth:getWarmthMenu()
             enabled = false,
         },
         getWarmthMenuEntry(_("Solar noon"), 6),
-        getWarmthMenuEntry(_("Sunset and sunrise"), 5),
-        getWarmthMenuEntry(_("Darkest time of civil twilight"), 4),
+        getWarmthMenuEntry(_("Sunset"), 7),
+        getWarmthMenuEntry(_("Sunrise"), 5),
+        getWarmthMenuEntry(_("Civil dusk"), 8),
+        getWarmthMenuEntry(_("Civil dawn"), 4),
         getWarmthMenuEntry(_("Darkest time of nautical twilight"), 3, false),
         getWarmthMenuEntry(_("Darkest time of astronomical twilight"), 2, false),
         getWarmthMenuEntry(_("Solar midnight"), 1, false),
@@ -1235,7 +1246,7 @@ function AutoWarmth:showTimesInfo(title, location, activator, request_easy)
                 if self.warmth[num] <= 100 then
                     return retval .. " (💡" .. self.warmth[num] .. "%)\n"
                 else
-                    return retval .. " (💡100%" .. (self.control_nightmode and " + ☾" or "") .. ")\n"
+                    return retval .. " (💡" .. math.max(self.warmth[num] - 1000, 0) .. "%" .. (self.control_nightmode and " + ☾" or "") .. ")\n"
                 end
             else
                 return retval .. "\n"
