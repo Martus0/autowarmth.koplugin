@@ -322,17 +322,19 @@ function AutoWarmth:scheduleMidnightUpdate(from_resume)
         if warmth_diff ~= 0 and time_diff_s > 0 then
             -- Determine ramp window based on transition direction
             local raw_trans_s
+            local ramp_duration_s
             local ramp_start_s
             if warmth_diff < 0 then
                 -- decreasing: transition AFTER index1
                 raw_trans_s = (self.transition_duration[index1] or 0) * 60
+                ramp_duration_s = raw_trans_s > 0 and math.min(raw_trans_s, time_diff_s) or time_diff_s
                 ramp_start_s = time1_s
             else
                 -- increasing: transition BEFORE index2
                 raw_trans_s = (self.transition_duration[index2] or 0) * 60
-                ramp_start_s = time1_s + time_diff_s - math.min(raw_trans_s, time_diff_s)
+                ramp_duration_s = raw_trans_s > 0 and math.min(raw_trans_s, time_diff_s) or time_diff_s
+                ramp_start_s = time1_s + time_diff_s - ramp_duration_s
             end
-            local ramp_duration_s = (raw_trans_s > 0) and math.min(raw_trans_s, time_diff_s) or time_diff_s
 
             -- Iterate over hardware steps so all device levels are used regardless of
             -- whether they fall on integer warmth% boundaries (e.g. Kindle 24-step device)
