@@ -6,6 +6,9 @@ A modified version of KOReader's built-in `autowarmth` plugin with independent d
 
 ### Bug fixes
 
+**Schedule interpolation skipped most hardware steps on non-round devices**
+The original loop iterated in 1% warmth increments and filtered with `frac(n * scale) == 0`, which only passes integer hardware boundaries. On a Kindle (24 steps), this means only steps 6, 12, 18, 24 (multiples of 25%) were ever used — 2 changes instead of 14 for a 0→64% ramp. Fixed to iterate over hardware steps directly, using all available levels.
+
 **Warmth always set to 100% when dark mode enabled**
 The original encoded dark mode as `warmth + 1000` but then decoded it with `math.min(val, 100)`, which always produced 100. Fixed to `val - 1000`.
 

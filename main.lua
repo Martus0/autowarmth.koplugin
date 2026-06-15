@@ -334,13 +334,17 @@ function AutoWarmth:scheduleMidnightUpdate(from_resume)
             end
             local ramp_duration_s = (raw_trans_s > 0) and math.min(raw_trans_s, time_diff_s) or time_diff_s
 
-            local delta_t = ramp_duration_s / math.abs(warmth_diff) -- cannot be inf, no problem
-            local delta_w = warmth_diff > 0 and 1 or -1
-            for i = 1, math.abs(warmth_diff) - 1 do
-                local next_warmth = w1 + delta_w * i
-                -- only apply warmth for steps the hardware has (e.g. Tolino has 0-10 hw steps
-                -- which map to warmth 0, 10, 20, 30 ... 100)
-                if frac(next_warmth * device_warmth_fit_scale) == 0 then
+            -- Iterate over hardware steps so all device levels are used regardless of
+            -- whether they fall on integer warmth% boundaries (e.g. Kindle 24-step device)
+            local hw1 = math.floor(w1 * device_max_warmth / 100 + 0.5)
+            local hw2 = math.floor(w2 * device_max_warmth / 100 + 0.5)
+            local hw_diff = hw2 - hw1
+            if hw_diff ~= 0 then
+                local delta_t = ramp_duration_s / math.abs(hw_diff)
+                local delta_hw = hw_diff > 0 and 1 or -1
+                for i = 1, math.abs(hw_diff) - 1 do
+                    local hw = hw1 + delta_hw * i
+                    local next_warmth = math.floor(hw * 100 / device_max_warmth)
                     table.insert(self.sched_times_s, ramp_start_s + delta_t * i)
                     table.insert(self.sched_warmths, next_warmth + nightmode_flag)
                 end
