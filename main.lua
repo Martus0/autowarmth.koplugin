@@ -70,6 +70,8 @@ function AutoWarmth:init()
         or {0.0, 5.5, 6.0, 6.5, 7.0, 13.0, 21.5, 22.0, 22.5, 23.0, 24.0}
     self.warmth = G_reader_settings:readSetting("autowarmth_warmth")
         or { 90, 90, 80, 60, 20, 20, 20, 60, 80, 90, 90}
+    self.transition_duration = G_reader_settings:readSetting("autowarmth_transition_duration")
+        or {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
 
     self.fl_off_during_day = G_reader_settings:readSetting("autowarmth_fl_off_during_day")
     self.fl_off_during_day_offset_s = G_reader_settings:readSetting("autowarmth_fl_off_during_day_offset_s", 0)
@@ -318,16 +320,35 @@ function AutoWarmth:scheduleMidnightUpdate(from_resume)
         local warmth_diff = w2 - w1
         local time_diff_s = SunTime:getTimeInSec(time2_h) - time1_s
         if warmth_diff ~= 0 and time_diff_s > 0 then
-            local delta_t = time_diff_s / math.abs(warmth_diff) -- cannot be inf, no problem
+            -- Determine ramp window based on transition direction
+            local raw_trans_s
+            local ramp_start_s
+            if warmth_diff < 0 then
+                -- decreasing: transition AFTER index1
+                raw_trans_s = (self.transition_duration[index1] or 0) * 60
+                ramp_start_s = time1_s
+            else
+                -- increasing: transition BEFORE index2
+                raw_trans_s = (self.transition_duration[index2] or 0) * 60
+                ramp_start_s = time1_s + time_diff_s - math.min(raw_trans_s, time_diff_s)
+            end
+            local ramp_duration_s = (raw_trans_s > 0) and math.min(raw_trans_s, time_diff_s) or time_diff_s
+
+            local delta_t = ramp_duration_s / math.abs(warmth_diff) -- cannot be inf, no problem
             local delta_w = warmth_diff > 0 and 1 or -1
             for i = 1, math.abs(warmth_diff) - 1 do
                 local next_warmth = w1 + delta_w * i
                 -- only apply warmth for steps the hardware has (e.g. Tolino has 0-10 hw steps
                 -- which map to warmth 0, 10, 20, 30 ... 100)
                 if frac(next_warmth * device_warmth_fit_scale) == 0 then
-                    table.insert(self.sched_times_s, time1_s + delta_t * i)
+                    table.insert(self.sched_times_s, ramp_start_s + delta_t * i)
                     table.insert(self.sched_warmths, next_warmth + nightmode_flag)
                 end
+            end
+            -- Decreasing: insert hold step at ramp end so warmth locks to w2 until next keyframe
+            if warmth_diff < 0 and ramp_duration_s < time_diff_s then
+                table.insert(self.sched_times_s, ramp_start_s + ramp_duration_s)
+                table.insert(self.sched_warmths, w2 + nightmode_flag)
             end
         end
     end
@@ -1009,44 +1030,65 @@ function AutoWarmth:getWarmthMenu()
         return {
             mode = mode,
             text_func = function()
+                local trans = self.transition_duration[num] or 0
+                local trans_suffix = trans > 0 and (" " .. T(_("(%1 min)"), trans)) or ""
                 if Device:hasNaturalLight() and self.control_warmth then
                     if self.control_nightmode then
                         if self.warmth[num] <= 100 then
-                            return T(_("%1: %2 %"), text, self.warmth[num])
+                            return T(_("%1: %2 %"), text, self.warmth[num]) .. trans_suffix
                         else
-                            return T(_("%1: %2 % + ☾"), text, math.max(self.warmth[num] - 1000, 0))
+                            return T(_("%1: %2 % + ☾"), text, math.max(self.warmth[num] - 1000, 0)) .. trans_suffix
                         end
                     else
                         if self.warmth[num] <= 100 then
-                            return T(_("%1: %2 %"), text, self.warmth[num])
+                            return T(_("%1: %2 %"), text, self.warmth[num]) .. trans_suffix
                         else
-                            return T(_("%1: %2 %"), text, math.max(self.warmth[num] - 1000, 0))
+                            return T(_("%1: %2 %"), text, math.max(self.warmth[num] - 1000, 0)) .. trans_suffix
                         end
                     end
                 else
                     if self.warmth[num] <= 100 then
-                        return T(_("%1: ☼"), text)
+                        return T(_("%1: ☼"), text) .. trans_suffix
                     else
-                        return T(_("%1: ☾"), text)
+                        return T(_("%1: ☾"), text) .. trans_suffix
                     end
                 end
             end,
             callback = function(touchmenu_instance)
                 if Device:hasNaturalLight() and self.control_warmth then
-                    local warmth_spinner = SpinWidget:new{
+                    -- Determine transition direction label based on warmth vs next keyframe
+                    local w_cur = self.warmth[num] > 100 and self.warmth[num] - 1000 or self.warmth[num]
+                    local trans_label = _("Transition (min)")  -- fallback when direction is flat/unknown
+                    for j = num + 1, midnight_index do
+                        local w_j = self.warmth[j] > 100 and self.warmth[j] - 1000 or self.warmth[j]
+                        if w_cur > w_j then
+                            trans_label = T(_("Transition %1 (min)"), _("after"))
+                            break
+                        elseif w_cur < w_j then
+                            trans_label = T(_("Transition %1 (min)"), _("before"))
+                            break
+                        end
+                    end
+
+                    local warmth_spinner = DoubleSpinWidget:new{
                         title_text = text,
-                        info_text = _("Enter percentage of warmth."),
-                        value = self.warmth[num] <= 100 and self.warmth[num] or math.max(self.warmth[num] - 1000, 0), -- mask nightmode
-                        value_min = 0,
-                        value_max = 100,
-                        wrap = false,
-                        value_step = math.floor(100 / device_max_warmth),
-                        value_hold_step = 10,
-                        unit = "%",
+                        info_text = _("Enter warmth and transition duration."),
+                        left_text = _("Warmth (%)"),
+                        left_value = self.warmth[num] <= 100 and self.warmth[num] or math.max(self.warmth[num] - 1000, 0),
+                        left_min = 0,
+                        left_max = 100,
+                        left_step = math.floor(100 / device_max_warmth),
+                        left_hold_step = 10,
+                        right_text = trans_label,
+                        right_value = self.transition_duration[num] or 0,
+                        right_min = 0,
+                        right_max = 120,
+                        right_step = 5,
+                        right_hold_step = 15,
                         ok_text = _("Set"),
                         ok_always_enabled = true,
-                        callback = function(spin)
-                            self.warmth[num] = spin.value
+                        callback = function(warmth_val, trans_val)
+                            self.warmth[num] = warmth_val
                             if self.control_nightmode and self.night_mode_check_box.checked then
                                 if self.warmth[num] <= 100 then
                                     self.warmth[num] = self.warmth[num] + 1000 -- add night mode
@@ -1059,7 +1101,12 @@ function AutoWarmth:getWarmthMenu()
                             if num <= 3 then
                                 self.warmth[#self.warmth - num + 1] = self.warmth[num]
                             end
+                            self.transition_duration[num] = trans_val
+                            if num <= 3 then
+                                self.transition_duration[#self.transition_duration - num + 1] = trans_val
+                            end
                             G_reader_settings:saveSetting("autowarmth_warmth", self.warmth)
+                            G_reader_settings:saveSetting("autowarmth_transition_duration", self.transition_duration)
                             self:scheduleMidnightUpdate()
                             if touchmenu_instance then self:updateItems(touchmenu_instance) end
                         end,
@@ -1074,6 +1121,7 @@ function AutoWarmth:getWarmthMenu()
                         warmth_spinner:addWidget(self.night_mode_check_box)
                     end
                     UIManager:show(warmth_spinner)
+
                 else
                     UIManager:show(ConfirmBox:new{
                         text = _("Night mode"),
@@ -1243,10 +1291,23 @@ function AutoWarmth:showTimesInfo(title, location, activator, request_easy)
             return retval .. "\n"
         elseif Device:hasNaturalLight() and self.control_warmth then
             if self.current_times_h[num] == time then
+                local trans = num and (self.transition_duration[num] or 0) or 0
+                local trans_suffix = ""
+                if trans > 0 and num then
+                    local w_cur = self.warmth[num] > 100 and self.warmth[num] - 1000 or self.warmth[num]
+                    local direction = ""
+                    for j = num + 1, midnight_index do
+                        local w_j = self.warmth[j] > 100 and self.warmth[j] - 1000 or self.warmth[j]
+                        if w_cur > w_j then direction = " " .. _("after") break
+                        elseif w_cur < w_j then direction = " " .. _("before") break
+                        end
+                    end
+                    trans_suffix = " " .. T(_("%1 min"), trans) .. direction
+                end
                 if self.warmth[num] <= 100 then
-                    return retval .. " (💡" .. self.warmth[num] .. "%)\n"
+                    return retval .. " (💡" .. self.warmth[num] .. "%" .. trans_suffix .. ")\n"
                 else
-                    return retval .. " (💡" .. math.max(self.warmth[num] - 1000, 0) .. "%" .. (self.control_nightmode and " + ☾" or "") .. ")\n"
+                    return retval .. " (💡" .. math.max(self.warmth[num] - 1000, 0) .. "%" .. (self.control_nightmode and " + ☾" or "") .. trans_suffix .. ")\n"
                 end
             else
                 return retval .. "\n"
