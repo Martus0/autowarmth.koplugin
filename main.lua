@@ -1056,9 +1056,9 @@ function AutoWarmth:getWarmthMenu()
             end,
             callback = function(touchmenu_instance)
                 if Device:hasNaturalLight() and self.control_warmth then
-                    -- Determine transition direction label based on warmth vs next keyframe
+                    -- Transition direction label
                     local w_cur = self.warmth[num] > 100 and self.warmth[num] - 1000 or self.warmth[num]
-                    local trans_label = _("Transition (min)")  -- fallback when direction is flat/unknown
+                    local trans_label = _("Transition (min)")
                     for j = num + 1, midnight_index do
                         local w_j = self.warmth[j] > 100 and self.warmth[j] - 1000 or self.warmth[j]
                         if w_cur > w_j then
@@ -1070,25 +1070,20 @@ function AutoWarmth:getWarmthMenu()
                         end
                     end
 
-                    local warmth_spinner = DoubleSpinWidget:new{
+                    local warmth_spinner = SpinWidget:new{
                         title_text = text,
-                        info_text = _("Enter warmth and transition duration."),
-                        left_text = _("Warmth (%)"),
-                        left_value = self.warmth[num] <= 100 and self.warmth[num] or math.max(self.warmth[num] - 1000, 0),
-                        left_min = 0,
-                        left_max = 100,
-                        left_step = math.floor(100 / device_max_warmth),
-                        left_hold_step = 10,
-                        right_text = trans_label,
-                        right_value = self.transition_duration[num] or 0,
-                        right_min = 0,
-                        right_max = 120,
-                        right_step = 5,
-                        right_hold_step = 15,
+                        info_text = _("Enter percentage of warmth."),
+                        value = self.warmth[num] <= 100 and self.warmth[num] or math.max(self.warmth[num] - 1000, 0),
+                        value_min = 0,
+                        value_max = 100,
+                        wrap = false,
+                        value_step = math.floor(100 / device_max_warmth),
+                        value_hold_step = 10,
+                        unit = "%",
                         ok_text = _("Set"),
                         ok_always_enabled = true,
-                        callback = function(warmth_val, trans_val)
-                            self.warmth[num] = warmth_val
+                        callback = function(spin)
+                            self.warmth[num] = spin.value
                             if self.control_nightmode and self.night_mode_check_box.checked then
                                 if self.warmth[num] <= 100 then
                                     self.warmth[num] = self.warmth[num] + 1000 -- add night mode
@@ -1101,14 +1096,29 @@ function AutoWarmth:getWarmthMenu()
                             if num <= 3 then
                                 self.warmth[#self.warmth - num + 1] = self.warmth[num]
                             end
-                            self.transition_duration[num] = trans_val
-                            if num <= 3 then
-                                self.transition_duration[#self.transition_duration - num + 1] = trans_val
-                            end
                             G_reader_settings:saveSetting("autowarmth_warmth", self.warmth)
-                            G_reader_settings:saveSetting("autowarmth_transition_duration", self.transition_duration)
-                            self:scheduleMidnightUpdate()
-                            if touchmenu_instance then self:updateItems(touchmenu_instance) end
+                            -- Transition spinner opens after warmth is confirmed
+                            UIManager:show(SpinWidget:new{
+                                title_text = trans_label,
+                                value = self.transition_duration[num] or 0,
+                                value_min = 0,
+                                value_max = 120,
+                                wrap = false,
+                                value_step = 5,
+                                value_hold_step = 15,
+                                unit = _("min"),
+                                ok_text = _("Set"),
+                                ok_always_enabled = true,
+                                callback = function(trans_spin)
+                                    self.transition_duration[num] = trans_spin.value
+                                    if num <= 3 then
+                                        self.transition_duration[#self.transition_duration - num + 1] = trans_spin.value
+                                    end
+                                    G_reader_settings:saveSetting("autowarmth_transition_duration", self.transition_duration)
+                                    self:scheduleMidnightUpdate()
+                                    if touchmenu_instance then self:updateItems(touchmenu_instance) end
+                                end,
+                            })
                         end,
                     }
 
