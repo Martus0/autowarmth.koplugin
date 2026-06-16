@@ -53,6 +53,8 @@ local AutoWarmth = WidgetContainer:extend{
     -- Static member that shall survive reloading of the plugin but not a restart
     fl_user_toggle = false, -- true/false if someone (AutoWarmth, gesture ...) has toggled the frontlight
     fl_turned_off = false, -- the frontlight toggle state
+
+    _user_nm_override = false, -- user manually set nightmode this wake session; cleared on suspend
 }
 
 function AutoWarmth:init()
@@ -203,6 +205,7 @@ end
 
 function AutoWarmth:_onSuspend()
     logger.dbg("AutoWarmth: onSuspend")
+    self._user_nm_override = false
     UIManager:unschedule(self.scheduleMidnightUpdate)
     UIManager:unschedule(self.setWarmth)
     UIManager:unschedule(self.setFrontlight)
@@ -211,6 +214,7 @@ end
 
 function AutoWarmth:_onToggleNightMode()
     logger.dbg("AutoWarmth: onToggleNightMode")
+    self._user_nm_override = true
     if not self.hide_nightmode_warning then
         local RadioButtonWidget = require("ui/widget/radiobuttonwidget")
         local radio_buttons = {
@@ -565,7 +569,13 @@ function AutoWarmth:setWarmth(val, force_warmth)
     -- We use an offset of 1000 to "flag", that night mode is on.
     if val then
         if self.control_nightmode then
-            DeviceListener:onSetNightMode(val > 100)
+            local want_nm = val > 100
+            if want_nm then
+                DeviceListener:onSetNightMode(true)
+                self._user_nm_override = false
+            elseif not self._user_nm_override then
+                DeviceListener:onSetNightMode(false)
+            end
         end
 
         if self.control_warmth and Device:hasNaturalLight() then
